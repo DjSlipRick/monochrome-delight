@@ -1,28 +1,20 @@
 /**
- * src/lib/hybridGenerator.ts
- * Hybrid playlist generator using public MusicBrainz lookup and client-side audio analysis.
- * No paid services required.
+ * instrumented hybridGenerator for debugging
  */
-
 type Track = {
   id: string;
   title?: string;
   artist?: string;
   duration?: number;
-  source?: string; // 'own' | 'deezer' | 'qobuz' | ...
-  url?: string; // optional audio URL for own tracks
+  source?: string;
+  url?: string;
   bpm?: number;
-  energy?: number; // 0..1
+  energy?: number;
   genre?: string | null;
   [k: string]: any;
 };
 
-type Features = {
-  bpm: number;
-  energy: number;
-  genre?: string | null;
-  source?: string;
-};
+type Features = { bpm: number; energy: number; genre?: string | null; source?: string };
 
 function clamp01(v: number) { return Math.max(0, Math.min(1, v)); }
 
@@ -34,28 +26,31 @@ async function musicBrainzLookup(artist?: string, title?: string): Promise<Parti
     if (artist) qParts.push(`artist:"${encodeURIComponent(artist)}"`);
     const q = qParts.join(' AND ');
     const url = `https://musicbrainz.org/ws/2/recording/?query=${q}&fmt=json&limit=3`;
+    console.debug('[hybrid][MB] lookup url', url);
     const res = await fetch(url, { headers: { 'Accept': 'application/json' }});
-    if (!res.ok) return null;
+    if (!res.ok) { console.debug('[hybrid][MB] non-ok response', res.status); return null; }
     const json = await res.json();
-    if (!json.recordings || json.recordings.length === 0) return null;
+    if (!json.recordings || json.recordings.length === 0) { console.debug('[hybrid][MB] no recordings'); return null; }
     const rec = json.recordings[0];
     const genre = (rec['tags'] && rec['tags'][0] && rec['tags'][0].name) || null;
+    console.debug('[hybrid][MB] found genre', genre);
     return { genre };
   } catch (err) {
-    console.warn('MusicBrainz lookup failed', err);
+    console.warn('[hybrid][MB] lookup failed', err);
     return null;
   }
 }
 
 async function fetchAudioBuffer(url: string): Promise<AudioBuffer | null> {
   try {
+    console.debug('[hybrid][audio] fetchAudioBuffer', url);
     const resp = await fetch(url);
-    if (!resp.ok) return null;
+    if (!resp.ok) { console.debug('[hybrid][audio] fetch non-ok', resp.status); return null; }
     const ab = await resp.arrayBuffer();
     const ctx = new (window.OfflineAudioContext || (window as any).webkitOfflineAudioContext)(1, 44100 * 30, 44100);
     return await ctx.decodeAudioData(ab);
   } catch (err) {
-    console.warn('fetchAudioBuffer failed', err);
+    console.warn('[hybrid][audio] fetchAudioBuffer failed', err);
     return null;
   }
 }
@@ -124,7 +119,7 @@ async function estimateBpmFromBuffer(buf: AudioBuffer) {
     const bpm = autoCorrelationTempo(onset, framesPerSec);
     return bpm;
   } catch (err) {
-    console.warn('estimateBpmFromBuffer failed', err);
+    console.warn('[hybrid][bpm] estimate failed', err);
     return null;
   }
 }
@@ -134,23 +129,31 @@ async function analyzeAudio(url: string): Promise<Partial<Features> | null> {
   if (!buf) return null;
   const energy = estimateEnergyFromBuffer(buf);
   const bpm = await estimateBpmFromBuffer(buf);
+  console.debug('[hybrid][audio] analysis result', { url, bpm, energy });
   return { bpm: bpm ?? undefined, energy: energy ?? undefined };
 }
 
 async function resolveFeatures(track: Track): Promise<Features> {
   const defaults: Features = { bpm: 120, energy: 0.5, genre: track.genre ?? null, source: track.source };
   if (typeof track.bpm === 'number' && typeof track.energy === 'number') {
+    console.debug('[hybrid][resolve] already has features', track.id);
     return { bpm: track.bpm, energy: track.energy, genre: track.genre ?? null, source: track.source };
   }
+  console.debug('[hybrid][resolve] resolving for', track.id, track.title, track.artist, 'url=', track.url);
   const mb = await musicBrainzLookup(track.artist, track.title);
-  if (mb && mb.genre && !track.genre) defaults.genre = mb.genre;
+  if (mb && mb.genre && !track.genre) { defaults.genre = mb.genre; console.debug('[hybrid][resolve] MB genre', mb.genre); }
   if (track.url) {
     const a = await analyzeAudio(track.url);
     if (a) {
       if (a.bpm) defaults.bpm = a.bpm;
       if (typeof a.energy === 'number') defaults.energy = a.energy;
+    } else {
+      console.debug('[hybrid][resolve] audio analysis returned null for', track.id);
     }
+  } else {
+    console.debug('[hybrid][resolve] no audio url for', track.id);
   }
+  console.debug('[hybrid][resolve] final features for', track.id, defaults);
   return { bpm: Math.round(defaults.bpm), energy: clamp01(defaults.energy), genre: defaults.genre ?? null, source: track.source };
 }
 
@@ -159,6 +162,7 @@ function normalizeFeatureValues(tracks: Features[]) {
   const energies = tracks.map(t => t.energy || 0.5);
   const minB = Math.min(...bpms), maxB = Math.max(...bpms);
   const minE = Math.min(...energies), maxE = Math.max(...energies);
+  console.debug('[hybrid][norm] bpm range', minB, maxB, 'energy range', minE, maxE);
   return tracks.map(t => ({
     bpm: (t.bpm - minB) / Math.max(1, (maxB - minB)),
     energy: (t.energy - minE) / Math.max(1e-6, (maxE - minE)),
@@ -168,9 +172,7 @@ function normalizeFeatureValues(tracks: Features[]) {
 }
 
 function similarityScore(a: {bpm:number, energy:number, genre?:string|null}, b: {bpm:number, energy:number, genre?:string|null}) {
-  const wBpm = 0.6;
-  const wEnergy = 0.3;
-  const wGenre = 0.1;
+  const wBpm = 0.6, wEnergy = 0.3, wGenre = 0.1;
   const db = Math.abs(a.bpm - b.bpm);
   const de = Math.abs(a.energy - b.energy);
   const genreMatch = (a.genre && b.genre && a.genre.toLowerCase() === b.genre.toLowerCase()) ? 1 : 0;
@@ -179,54 +181,48 @@ function similarityScore(a: {bpm:number, energy:number, genre?:string|null}, b: 
 }
 
 export async function generateHybridPlaylist(allTracks: Track[], opts: { limit?: number; preferOwn?: boolean } = {}) {
+  console.debug('[hybrid] generateHybridPlaylist called, allTracks.length=', allTracks?.length, 'opts=', opts);
   const limit = opts.limit ?? 50;
   const own = allTracks.filter(t => t.source === 'own');
   const ext = allTracks.filter(t => t.source !== 'own');
-
-  if (own.length === 0) return [];
-
+  console.debug('[hybrid] own count', own.length, 'ext count', ext.length);
+  if (own.length === 0) { console.debug('[hybrid] no own tracks, returning []'); return []; }
   const seed = own[Math.floor(Math.random() * own.length)];
-
+  console.debug('[hybrid] seed chosen', seed.id, seed.title, seed.artist);
   const candidates = allTracks.slice();
   const featuresMap = new Map<string, Features>();
-
   for (const t of candidates) {
     try {
       const f = await resolveFeatures(t);
       featuresMap.set(t.id, f);
     } catch (err) {
-      console.warn('resolveFeatures error for', t.id, err);
+      console.warn('[hybrid] resolveFeatures error for', t.id, err);
       featuresMap.set(t.id, { bpm: 120, energy: 0.5, genre: t.genre ?? null, source: t.source });
     }
   }
-
+  console.debug('[hybrid] featuresMap size', featuresMap.size);
   const featureList = Array.from(featuresMap.values());
   const normalized = normalizeFeatureValues(featureList);
-
   const idToNorm = new Map<string, {bpm:number, energy:number, genre?:string|null, source?:string}>();
   let idx = 0;
   for (const [id, f] of featuresMap.entries()) {
     const n = normalized[idx++];
     idToNorm.set(id, { bpm: n.bpm, energy: n.energy, genre: f.genre ?? null, source: f.source });
   }
-
   const seedNorm = idToNorm.get(seed.id)!;
-
+  console.debug('[hybrid] seedNorm', seedNorm);
   const scored = candidates.map(t => {
     const n = idToNorm.get(t.id)!;
     const sim = similarityScore(seedNorm, n);
     return { track: t, sim };
   });
-
   const scoredOwn = scored.filter(s => s.track.source === 'own').sort((a,b) => b.sim - a.sim);
   const scoredExt = scored.filter(s => s.track.source !== 'own').sort((a,b) => b.sim - a.sim);
-
+  console.debug('[hybrid] top own sims', scoredOwn.slice(0,5).map(s=>({id:s.track.id,sim:s.sim})));
+  console.debug('[hybrid] top ext sims', scoredExt.slice(0,5).map(s=>({id:s.track.id,sim:s.sim})));
   const ownCount = Math.ceil(limit * 0.75);
-  const extCount = Math.max(0, limit - ownCount);
-
   const selected: Track[] = [];
   const artistCount = new Map<string, number>();
-
   function pushIfAllowed(t: Track) {
     const artist = (t.artist || 'unknown').toLowerCase();
     const cnt = artistCount.get(artist) || 0;
@@ -235,17 +231,14 @@ export async function generateHybridPlaylist(allTracks: Track[], opts: { limit?:
     selected.push(t);
     return true;
   }
-
   for (const s of scoredOwn) {
     if (selected.length >= ownCount) break;
     pushIfAllowed(s.track);
   }
-
   for (const s of scoredExt) {
     if (selected.length >= limit) break;
     pushIfAllowed(s.track);
   }
-
   if (selected.length < limit) {
     for (const s of scoredOwn) {
       if (selected.length >= limit) break;
@@ -258,6 +251,11 @@ export async function generateHybridPlaylist(allTracks: Track[], opts: { limit?:
       if (!selected.includes(s.track)) pushIfAllowed(s.track);
     }
   }
-
+  console.debug('[hybrid] selected count', selected.length, 'artist distribution', Array.from(artistCount.entries()).slice(0,10));
+  if (selected.length === 0) {
+    // ensure seed at least present
+    console.debug('[hybrid] no tracks selected, adding seed as fallback');
+    selected.push(seed);
+  }
   return selected.map(t => ({ ...t, _hybridSeedId: seed.id }));
 }
