@@ -1,4 +1,5 @@
 import { generateHybridPlaylist } from '../lib/hybridGenerator';
+import { fetchOwnTracks } from '../services/ownTracks';
 
 type Track = { id: string; title?: string; artist?: string; source?: string; url?: string; [k:string]: any };
 
@@ -56,39 +57,44 @@ function renderList(container: HTMLElement, tracks: any[]) {
   container.appendChild(close);
 }
 
-/**
- * Probeer de tracklijst uit meerdere plekken te halen.
- * - window.__ALL_TRACKS__ (dev helper)
- * - window.app?.state?.tracks of window.app?.tracks
- * - window.store?.tracks
- * - window.__STORE__ (varianten)
- * Als niets gevonden wordt, return [].
- */
 async function getAllTracksFromApp(): Promise<Track[]> {
   try {
-    // common dev helper
+    // 1) primary: use service that holds own tracks
+    try {
+      const own = await fetchOwnTracks();
+      if (Array.isArray(own) && own.length > 0) {
+        console.debug('[hybridModal] fetched own tracks via fetchOwnTracks()', own.length);
+        // ensure source field exists
+        return own.map((t: any) => ({ ...t, source: t.source || 'own' }));
+      }
+      console.debug('[hybridModal] fetchOwnTracks returned empty or non-array');
+    } catch (e) {
+      console.debug('[hybridModal] fetchOwnTracks failed', e);
+    }
+
+    // 2) try common dev helper
     if ((window as any).__ALL_TRACKS__ && Array.isArray((window as any).__ALL_TRACKS__)) {
       console.debug('[hybridModal] found tracks in window.__ALL_TRACKS__', (window as any).__ALL_TRACKS__.length);
       return (window as any).__ALL_TRACKS__;
     }
 
-    // try common app namespaces
-    const candidates = [
-      (window as any).app?.state?.tracks,
-      (window as any).app?.tracks,
-      (window as any).store?.tracks,
-      (window as any).__STORE__?.tracks,
-      (window as any).__TRACKS__,
-    ];
-
-    for (const c of candidates) {
-      if (Array.isArray(c)) {
-        console.debug('[hybridModal] found tracks in candidate', c.length);
-        return c;
+    // 3) try /api/tracks fallback
+    try {
+      const resp = await fetch('/api/tracks');
+      if (resp.ok) {
+        const json = await resp.json();
+        if (Array.isArray(json) && json.length > 0) {
+          console.debug('[hybridModal] loaded tracks from /api/tracks', json.length);
+          return json;
+        }
+      } else {
+        console.debug('[hybridModal] /api/tracks returned non-ok', resp.status);
       }
+    } catch (e) {
+      console.debug('[hybridModal] /api/tracks fetch failed', e);
     }
 
-    // try to find a global variable that looks like tracks (best-effort)
+    // 4) heuristic scan of window globals
     for (const k of Object.keys(window as any)) {
       try {
         const v = (window as any)[k];
@@ -101,7 +107,7 @@ async function getAllTracksFromApp(): Promise<Track[]> {
   } catch (err) {
     console.warn('[hybridModal] getAllTracksFromApp error', err);
   }
-  console.debug('[hybridModal] no tracks found in app globals');
+  console.debug('[hybridModal] no tracks found in app globals or API');
   return [];
 }
 
@@ -114,28 +120,10 @@ export async function showHybridModal(opts: { limit?: number; preferOwn?: boolea
   modal.style.display = 'block';
   modal.innerHTML = 'Generating…';
   try {
-    // haal tracks uit de app (niet meer hardcoded [])
     const allTracks = await getAllTracksFromApp();
     console.debug('[hybridModal] allTracks length', allTracks.length);
 
-    // fallback: als app geen tracks exposeert, probeer een fetch naar een mogelijke API endpoint
-    let tracksToUse = allTracks;
-    if (tracksToUse.length === 0) {
-      try {
-        const resp = await fetch('/api/tracks');
-        if (resp.ok) {
-          const json = await resp.json();
-          if (Array.isArray(json)) {
-            tracksToUse = json;
-            console.debug('[hybridModal] loaded tracks from /api/tracks', tracksToUse.length);
-          }
-        }
-      } catch (e) {
-        console.debug('[hybridModal] /api/tracks fetch failed', e);
-      }
-    }
-
-    const playlist = await generateHybridPlaylist(tracksToUse, opts);
+    const playlist = await generateHybridPlaylist(allTracks, opts);
     renderList(modal, playlist);
   } catch (err) {
     modal.innerHTML = 'Error generating playlist — check console';
