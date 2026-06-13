@@ -1,4 +1,5 @@
 import { showHybridModal } from './hybridModal';
+import { mountHybridSettings, getHybridSettings } from './hybridSettings';
 
 type Opts = { limit?: number; preferOwn?: boolean };
 
@@ -39,11 +40,31 @@ function createButton(): HTMLButtonElement {
   return btn;
 }
 
+function createSettingsButton(): HTMLButtonElement {
+  const btn = document.createElement('button');
+  btn.id = 'hybrid-settings-btn';
+  btn.title = 'Hybrid settings';
+  btn.textContent = '⚙';
+  btn.style.position = 'fixed';
+  btn.style.right = '120px';
+  btn.style.bottom = '18px';
+  btn.style.padding = '8px';
+  btn.style.background = '#fff';
+  btn.style.color = '#111';
+  btn.style.border = '1px solid #ddd';
+  btn.style.borderRadius = '8px';
+  btn.style.cursor = 'pointer';
+  btn.style.zIndex = '99999';
+  return btn;
+}
+
 async function onClick(overlay: HTMLDivElement, opts: Opts = {}) {
   try {
     overlay.style.display = 'block';
     overlay.textContent = 'Generating…';
-    await showHybridModal(opts);
+    const stored = getHybridSettings();
+    const merged = { limit: opts.limit ?? stored.limit ?? 50, preferOwn: opts.preferOwn ?? stored.preferOwn ?? false };
+    await showHybridModal(merged);
     overlay.style.display = 'none';
   } catch (err) {
     console.error('hybrid generator error', err);
@@ -58,8 +79,12 @@ async function onClick(overlay: HTMLDivElement, opts: Opts = {}) {
 export function mountHybridButton() {
   if (document.getElementById('hybrid-gen-btn')) return;
   const btn = createButton();
+  const settingsBtn = createSettingsButton();
   const overlay = createOverlay();
   document.body.appendChild(overlay);
   document.body.appendChild(btn);
-  btn.addEventListener('click', () => onClick(overlay, { limit: 50, preferOwn: false }));
+  document.body.appendChild(settingsBtn);
+
+  btn.addEventListener('click', () => onClick(overlay, {}));
+  settingsBtn.addEventListener('click', () => mountHybridSettings(settingsBtn));
 }
