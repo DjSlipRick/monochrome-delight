@@ -1,4 +1,3 @@
-import { mountHybridButton as _mount } from './_placeholder'; // placeholder to keep TS happy if needed
 import { showHybridModal } from './hybridModal';
 
 type Opts = { limit?: number; preferOwn?: boolean };
