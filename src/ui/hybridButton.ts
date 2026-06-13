@@ -1,4 +1,5 @@
-import { generateHybridPlaylist } from '../lib/hybridGenerator';
+import { mountHybridButton as _mount } from './_placeholder'; // placeholder to keep TS happy if needed
+import { showHybridModal } from './hybridModal';
 
 type Opts = { limit?: number; preferOwn?: boolean };
 
@@ -43,16 +44,12 @@ async function onClick(overlay: HTMLDivElement, opts: Opts = {}) {
   try {
     overlay.style.display = 'block';
     overlay.textContent = 'Generating…';
-    const hybrid = await generateHybridPlaylist([], opts);
-    console.log('hybrid playlist', hybrid);
-    overlay.textContent = `Hybrid playlist generated — ${hybrid.length} tracks`;
-    setTimeout(() => {
-      overlay.style.display = 'none';
-    }, 3500);
+    await showHybridModal(opts);
+    overlay.style.display = 'none';
   } catch (err) {
     console.error('hybrid generator error', err);
     overlay.style.display = 'block';
-    overlay.textContent = 'hybrid generator error — see console';
+    overlay.textContent = 'Hybrid generator error — see console';
     setTimeout(() => {
       overlay.style.display = 'none';
     }, 3500);
